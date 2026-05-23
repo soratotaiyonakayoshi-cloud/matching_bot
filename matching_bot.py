@@ -3,7 +3,7 @@ from discord import app_commands
 import random
 import asyncio
 import os
-import io  # ★安全なファイル処理のために追加
+import io
 from flask import Flask
 import threading
 from datetime import datetime, timezone, timedelta
@@ -139,7 +139,7 @@ async def load_all_config():
                 if temp_ng: ng_relations = temp_ng
                 if temp_chat: ODAI_CHAT = temp_chat
                 if temp_love: ODAI_LOVE = temp_love
-                print(f"★過去の設定（NG・お題・音声・時間【{POMODORO_WORK_MIN}分/{POMODORO_BREAK_MIN}分】）を復元しました。", flush=True)
+                print(f"★設定復元：集中 {POMODORO_WORK_MIN}分 / 休憩 {POMODORO_BREAK_MIN}分", flush=True)
             except Exception as e:
                 print(f"設定復元エラー: {e}", flush=True)
 
@@ -165,7 +165,6 @@ def create_panel_embed():
         color=discord.Color.blurple()
     )
 
-# --- 🎲 臨時VC内での話題再ガチャView ---
 class OdaiRerollView(discord.ui.View):
     def __init__(self, category: str):
         super().__init__(timeout=None)
@@ -181,7 +180,6 @@ class OdaiRerollView(discord.ui.View):
         selected_odai = random.choice(odai_list)
         await interaction.response.send_message(f"🎲 **新しくお題を引いたよ！**\n> **{selected_odai}**")
 
-# --- 🎵 VC音声再生システム ---
 async def play_notification_audio(vc_channel, audio_url):
     if not audio_url: return
     try:
@@ -200,7 +198,6 @@ async def play_notification_audio(vc_channel, audio_url):
                 if v.channel.id == vc_channel.id: await v.disconnect()
         except: pass
 
-# --- ⏱️ ポモドーロタイマーのロジック ---
 async def pomodoro_loop(channel, work_min, break_min):
     try:
         while True:
@@ -229,7 +226,7 @@ class PomodoroView(discord.ui.View):
         if self.channel_id in active_pomodoros:
             await interaction.response.send_message("⚠️ 既にこの部屋でタイマーが作動中です！", ephemeral=True)
             return
-        await interaction.response.send_message(f"⏱️ **ポモドーロタイマーを開始しました！**\n（{self.work_min}分作業 ➔ {self.break_min}分休憩 のサイクルを繰り返します）")
+        await interaction.response.send_message(f"⏱️ **ポモドーロタイマーを開始しました！**\n（{self.work_min}分作業 ➔ {self.break_min}分休憩 を繰り返します）")
         task = asyncio.create_task(pomodoro_loop(channel, self.work_min, self.break_min))
         active_pomodoros[self.channel_id] = task
 
@@ -243,7 +240,6 @@ class PomodoroView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ 現在作動中のタイマーはありません。", ephemeral=True)
 
-# --- 📝 作業内容を入力してもらうポップアップ ---
 class WorkModal(discord.ui.Modal, title="📝 今日の作業内容を入力"):
     content = discord.ui.TextInput(
         label="今から何をする？（みんなにシェアされます）",
@@ -259,7 +255,6 @@ class WorkModal(discord.ui.Modal, title="📝 今日の作業内容を入力"):
     async def on_submit(self, interaction: discord.Interaction):
         await self.m_view.handle_work_entry(interaction, self.content.value)
 
-# --- 🙋‍♂️ メインの募集パネルUI ---
 class MatchingView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -373,7 +368,6 @@ class MatchingView(discord.ui.View):
     async def btn_work(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(WorkModal(self))
 
-# --- Bot本体 ---
 class MyBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -405,7 +399,6 @@ async def on_ready():
             await panel_channel.send(embed=create_panel_embed(), view=MatchingView())
     print(f"====================================", flush=True)
 
-# 臨時VCの自動削除＆作業時間の計算
 @bot.event
 async def on_voice_state_update(member, before, after):
     global created_temp_channels, work_vc_start_times, work_vc_contents, active_pomodoros
@@ -445,77 +438,93 @@ async def on_voice_state_update(member, before, after):
             except Exception as e:
                 print(f"チャンネル削除エラー: {e}", flush=True)
 
-# --- ⏱️ ポモドーロの時間を設定する管理者用スラッシュコマンド ---
-@bot.tree.command(name="set_pomo_time", description="【管理者用】ポモドーロタイマーの集中時間と休憩時間を指定（分）して設定します")
-@app_commands.describe(work_minutes="集中する時間（分）を入力（例: 25）", break_minutes="休憩する時間（分）を入力（例: 5）")
+@bot.tree.command(name="set_pomo_time", description="【管理者用】ポモドーロタイマーの時間を設定します")
+@app_commands.describe(work_minutes="集中時間（分）", break_minutes="休憩時間（分）")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_pomo_time_command(interaction: discord.Interaction, work_minutes: int, break_minutes: int):
     global POMODORO_WORK_MIN, POMODORO_BREAK_MIN
-    
     if work_minutes <= 0 or break_minutes <= 0:
         await interaction.response.send_message("❌ 時間は1分以上で指定してください。", ephemeral=True)
         return
-        
     POMODORO_WORK_MIN = work_minutes
     POMODORO_BREAK_MIN = break_minutes
-    
     await save_all_config() 
     await interaction.response.send_message(
-        f"✅ **ポモドーロタイマーの時間を新しく設定しました！**\n"
-        f"⏱️ **集中時間:** {work_minutes}分\n"
-        f"☕ **休憩時間:** {break_minutes}分\n"
-        f"※この設定は、今後新しくマッチングして作られる作業部屋から自動適用されます。"
+        f"✅ **ポモドーロタイマーの時間を設定しました！**\n⏱️ 集中: {work_minutes}分 / 休憩: {break_minutes}分"
     )
 
-# --- 🎵 音声をセットする管理者用スラッシュコマンド（★バグ修正完了） ---
-@bot.tree.command(name="set_pomo_audio", description="【管理者用】ポモドーロタイマーの通知音を設定・上書きします")
-@app_commands.describe(timing="どのタイミングの音を設定しますか？", file="音声ファイル（mp3など）をドロップしてね")
+@bot.tree.command(name="set_pomo_audio", description="【管理者用】ポモドーロタイマーの通知音を設定します")
+@app_commands.describe(timing="タイミング", file="音声ファイル")
 @app_commands.choices(timing=[
-    app_commands.Choice(name="🔔 作業終了時（休憩開始の合図）", value="work_end"),
-    app_commands.Choice(name="⚔️ 休憩終了時（作業再開の合図）", value="break_end")
+    app_commands.Choice(name="🔔 作業終了時", value="work_end"),
+    app_commands.Choice(name="⚔️ 休憩終了時", value="break_end")
 ])
 @app_commands.checks.has_permissions(administrator=True)
 async def set_pomo_audio_command(interaction: discord.Interaction, timing: str, file: discord.Attachment):
     global AUDIO_WORK_END_URL, AUDIO_BREAK_END_URL
     await interaction.response.defer()
-    
     db_channel = bot.get_channel(AUDIO_DB_CHANNEL_ID)
     if not db_channel:
-        await interaction.followup.send("❌ 環境変数 `AUDIO_DB_CHANNEL_ID` のチャンネルが見つかりません。")
+        await interaction.followup.send("❌ 音声保存用チャンネルが見つかりません。")
         return
-        
     try:
         file_bytes = await file.read()
-        
-        # ★構文エラーになっていた部分を安全な形に修正
         bytes_io = io.BytesIO(file_bytes)
         discord_file = discord.File(fp=bytes_io, filename=file.filename)
-        
-        db_message = await db_channel.send(
-            content=f"🎵 設定された通知音: **{timing}**\n登録日時: {datetime.now(JST).strftime('%Y/%m/%d %H:%M')}",
-            file=discord_file
-        )
-        
+        db_message = await db_channel.send(content=f"🎵 通知音: {timing}", file=discord_file)
         saved_url = db_message.attachments[0].url
         if timing == "work_end":
             AUDIO_WORK_END_URL = saved_url
-            label = "作業終了（休憩開始）"
         else:
             AUDIO_BREAK_END_URL = saved_url
-            label = "休憩終了（作業再開）"
-            
         await save_all_config() 
-        await interaction.followup.send(f"✅ **{label}** の通知音を新しく登録・保存しました！\n🔗 音声URL: {saved_url}")
+        await interaction.followup.send(f"✅ 通知音を登録しました！")
     except Exception as e:
-        await interaction.followup.send(f"❌ 音声ファイルの登録中にエラーが発生しました: {e}")
+        await interaction.followup.send(f"❌ エラーが発生しました: {e}")
 
-# 管理者用手動コマンド
-@bot.tree.command(name="setup_matching", description="【管理者用】手動でマッチング受付パネルを設置します")
+@bot.tree.command(name="setup_matching", description="【管理者用】マッチング受付パネルを設置します")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_matching_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=create_panel_embed(), view=MatchingView())
 
-# 秘密のNG登録
-@bot.tree.command(name="matching_guard", description="指定したユーザーとマッチングしないように秘密裏にブロックします")
-@app_commands.describe(target_member="マッチングを避けたいメンバーを選択")
-async def matching_guard_command(interaction: discord.Interaction, target
+@bot.tree.command(name="matching_guard", description="指定したユーザーとマッチングしないようにブロックします")
+@app_commands.describe(target_member="ブロックするメンバー")
+async def matching_guard_command(interaction: discord.Interaction, target_member: discord.Member):
+    global ng_relations
+    user = interaction.user
+    if target_member.id == user.id:
+        await interaction.response.send_message("❌ 自分自身をブロックすることはできません。", ephemeral=True)
+        return
+    if user.id not in ng_relations: ng_relations[user.id] = []
+    if target_member.id not in ng_relations[user.id]:
+        ng_relations[user.id].append(target_member.id)
+        await save_all_config()
+        await interaction.response.send_message(f"🔒 ガードを設定しました。", ephemeral=True)
+    else:
+        ng_relations[user.id].remove(target_member.id)
+        await save_all_config()
+        await interaction.response.send_message(f"🔓 ガードを解除しました。", ephemeral=True)
+
+@bot.tree.command(name="add_odai", description="マッチング時の『お題』を追加します")
+@app_commands.describe(category="どのお題に追加しますか？", text="お題の文章")
+@app_commands.choices(category=[
+    app_commands.Choice(name="☕ 雑談", value="chat"),
+    app_commands.Choice(name="💓 恋バナ", value="love")
+])
+async def add_odai_command(interaction: discord.Interaction, category: str, text: str):
+    global ODAI_CHAT, ODAI_LOVE
+    formatted_odai = f"「{text}」"
+    if category == "chat":
+        formatted_odai = "☕" + formatted_odai
+        ODAI_CHAT.append(formatted_odai)
+    else:
+        formatted_odai = "💓" + formatted_odai
+        ODAI_LOVE.append(formatted_odai)
+    await save_all_config()
+    await interaction.response.send_message(f"✅ 新しいお題を追加しました！\n> **{formatted_odai}**")
+
+server_thread = threading.Thread(target=run_server)
+server_thread.daemon = True
+server_thread.start()
+
+if TOKEN: bot.run(TOKEN)
