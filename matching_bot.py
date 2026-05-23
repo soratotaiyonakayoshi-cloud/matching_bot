@@ -32,7 +32,7 @@ PANEL_CHANNEL_ID = int(os.getenv("PANEL_CHANNEL_ID", "0"))
 AUDIO_DB_CHANNEL_ID = int(os.getenv("AUDIO_DB_CHANNEL_ID", "0")) 
 JST = timezone(timedelta(hours=9))
 
-# マッチング必要人数
+# マッチング必要人数（デフォルト値。コマンドで可変になります）
 COUNT_CHAT = 3  
 COUNT_LOVE = 2  
 COUNT_WORK = 4  
@@ -97,11 +97,18 @@ async def save_all_config():
         lines.append(f"WORK_MIN>{POMODORO_WORK_MIN}")
         lines.append(f"BREAK_MIN>{POMODORO_BREAK_MIN}")
         lines.append("===POMODORO_TIME_END===")
+
+        lines.append("===MATCH_COUNT_START===")
+        lines.append(f"CHAT>{COUNT_CHAT}")
+        lines.append(f"LOVE>{COUNT_LOVE}")
+        lines.append(f"WORK>{COUNT_WORK}")
+        lines.append("===MATCH_COUNT_END===")
         
         await config_channel.send("\n".join(lines))
 
 async def load_all_config():
     global ng_relations, ODAI_CHAT, ODAI_LOVE, AUDIO_WORK_END_URL, AUDIO_BREAK_END_URL, POMODORO_WORK_MIN, POMODORO_BREAK_MIN
+    global COUNT_CHAT, COUNT_LOVE, COUNT_WORK
     config_channel = bot.get_channel(CONFIG_CHANNEL_ID)
     if config_channel:
         async for message in config_channel.history(limit=1):
@@ -121,6 +128,8 @@ async def load_all_config():
                     elif line == "===AUDIO_END===": mode = None; continue
                     elif line == "===POMODORO_TIME_START===": mode = "POMODORO"; continue
                     elif line == "===POMODORO_TIME_END===": mode = None; continue
+                    elif line == "===MATCH_COUNT_START===": mode = "MATCH_COUNT"; continue
+                    elif line == "===MATCH_COUNT_END===": mode = None; continue
                         
                     if mode == "NG" and ">" in line:
                         uid, nlist = line.split(">")
@@ -135,20 +144,23 @@ async def load_all_config():
                         key, val = line.split(">")
                         if key == "WORK_MIN": POMODORO_WORK_MIN = int(val)
                         elif key == "BREAK_MIN": POMODORO_BREAK_MIN = int(val)
+                    elif mode == "MATCH_COUNT" and ">" in line:
+                        key, val = line.split(">")
+                        if key == "CHAT": COUNT_CHAT = int(val)
+                        elif key == "LOVE": COUNT_LOVE = int(val)
+                        elif key == "WORK": COUNT_WORK = int(val)
                         
                 if temp_ng: ng_relations = temp_ng
                 if temp_chat: ODAI_CHAT = temp_chat
                 if temp_love: ODAI_LOVE = temp_love
-                print(f"★設定復元：集中 {POMODORO_WORK_MIN}分 / 休憩 {POMODORO_BREAK_MIN}分", flush=True)
+                print(f"★設定復元：雑談({COUNT_CHAT}人) 恋バナ({COUNT_LOVE}人) 作業({COUNT_WORK}人)", flush=True)
             except Exception as e:
                 print(f"設定復元エラー: {e}", flush=True)
 
 def check_compatibility(potential_group):
-    # potential_group は Member オブジェクトのリスト
     for user_a in potential_group:
         for user_b in potential_group:
             if user_a.id == user_b.id: continue
-            # AがBをNG、またはBがAをNGにしている場合は不成立
             if user_b.id in ng_relations.get(user_a.id, []) or user_a.id in ng_relations.get(user_b.id, []):
                 return False
     return True
@@ -270,7 +282,6 @@ class MatchingView(discord.ui.View):
     async def handle_standard_entry(self, interaction: discord.Interaction, target_list: list, target_count: int, mode_name: str, emoji: str, category: str):
         user = interaction.user
         
-        # キャンセル（既にそのリストに入っている場合は抜ける）
         if user in target_list:
             target_list.remove(user)
             self.update_labels()
@@ -282,7 +293,6 @@ class MatchingView(discord.ui.View):
             await interaction.response.send_message("❌ 先にどこかのボイスチャンネル（VC）に入室してからボタンを押してください！", ephemeral=True)
             return
 
-        # 他のリストから重複を削除
         if user in waiting_chat: waiting_chat.remove(user)
         if user in waiting_love: waiting_love.remove(user)
         global waiting_work
@@ -319,7 +329,6 @@ class MatchingView(discord.ui.View):
                 try: await odai_msg.pin()
                 except: pass
             else:
-                # 相性が悪い場合はいったん外して通知後、再度戻す
                 if user in target_list: target_list.remove(user)
                 await interaction.followup.send("⏳ 相性調整のためマッチングを待機しています。そのままお待ちください！", ephemeral=True)
                 if user not in target_list: target_list.append(user)
@@ -332,231 +341,6 @@ class MatchingView(discord.ui.View):
             await interaction.response.send_message("❌ 先にどこかのボイスチャンネル（VC）に入室してからボタンを押してください！", ephemeral=True)
             return
 
-        # 他のリストから重複を削除
         if user in waiting_chat: waiting_chat.remove(user)
         if user in waiting_love: waiting_love.remove(user)
-        waiting_work = [w for w in waiting_work if w["user"].id != user.id]
-
-        waiting_work.append({"user": user, "content": work_content})
-        self.update_labels()
-        await interaction.response.edit_message(view=self)
-
-        if len(waiting_work) >= COUNT_WORK:
-            current_combination = waiting_work[:COUNT_WORK]
-            users_to_match = [w["user"] for w in current_combination]
-            
-            if check_compatibility(users_to_match):
-                guild = interaction.guild
-                temp_channel = await guild.create_voice_channel(name=f"📝 臨時作業VC-#{guild.id % 1000:03d}", category=user.voice.channel.category)
-                created_temp_channels.append(temp_channel.id)
-
-                work_vc_start_times[temp_channel.id] = datetime.now(JST)
-                work_vc_contents[temp_channel.id] = [{"name": w["user"].display_name, "content": w["content"]} for w in current_combination]
-
-                for item in current_combination:
-                    if item in waiting_work: waiting_work.remove(item)
-                    try: await item["user"].move_to(temp_channel)
-                    except: pass
-
-                self.update_labels()
-                await interaction.message.edit(view=self)
-
-                await temp_channel.send(
-                    f"🎉 **作業マッチング成立！**\n"
-                    f"🤖 **Botメッセージ：** 解散時に全員の作業時間を自動記録します。\n"
-                    f"ポモドーロタイマー（{POMODORO_WORK_MIN}分/{POMODORO_BREAK_MIN}分）を使いたい場合は、下のボタンを押してね！",
-                    view=PomodoroView(temp_channel.id, POMODORO_WORK_MIN, POMODORO_BREAK_MIN)
-                )
-            else:
-                waiting_work = [w for w in waiting_work if w["user"].id != user.id]
-                await interaction.followup.send("⏳ 相性調整のためマッチングを待機しています。そのままお待ちください！", ephemeral=True)
-                waiting_work.append({"user": user, "content": work_content})
-
-    @discord.ui.button(label=f"☕ 雑談 (0/{COUNT_CHAT}人)", style=discord.ButtonStyle.blurple, custom_id="btn_chat")
-    async def btn_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_standard_entry(interaction, waiting_chat, COUNT_CHAT, "雑談", "☕", "chat")
-
-    @discord.ui.button(label=f"💓 恋バナ (0/{COUNT_LOVE}人)", style=discord.ButtonStyle.red, custom_id="btn_love")
-    async def btn_love(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_standard_entry(interaction, waiting_love, COUNT_LOVE, "恋バナ", "💓", "love")
-
-    @discord.ui.button(label=f"📝 作業 (0/{COUNT_WORK}人)", style=discord.ButtonStyle.green, custom_id="btn_work")
-    async def btn_work(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user = interaction.user
-        global waiting_work
-        
-        # 作業のキャンセル処理（既にエントリーしていればモーダルを出さずに抜ける）
-        existing = [w for w in waiting_work if w["user"].id == user.id]
-        if existing:
-            waiting_work = [w for w in waiting_work if w["user"].id != user.id]
-            self.update_labels()
-            await interaction.response.edit_message(view=self)
-            await interaction.followup.send("➔ 📝 作業へのエントリーを取り消しました。", ephemeral=True)
-            return
-            
-        await interaction.response.send_modal(WorkModal(self))
-
-class MyBot(discord.Client):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.guilds = True
-        intents.voice_states = True
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
-
-    async def setup_hook(self):
-        self.add_view(MatchingView())
-        await self.tree.sync()
-
-bot = MyBot()
-
-@bot.event
-async def on_ready():
-    print(f"====================================", flush=True)
-    print(f"ログイン成功: {bot.user.name} が起動しました！", flush=True)
-    await load_all_config()
-    
-    panel_channel = bot.get_channel(PANEL_CHANNEL_ID)
-    if panel_channel:
-        has_panel = False
-        async for message in panel_channel.history(limit=10):
-            if message.author == bot.user and message.components:
-                if any(component.custom_id == "btn_chat" for action_row in message.components for component in action_row.children):
-                    has_panel = True; break
-        if not has_panel:
-            await panel_channel.send(embed=create_panel_embed(), view=MatchingView())
-    print(f"====================================", flush=True)
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    global created_temp_channels, work_vc_start_times, work_vc_contents, active_pomodoros
-    if before.channel is not None and "臨時" in before.channel.name:
-        humans = [m for m in before.channel.members if not m.bot]
-        if len(humans) == 0:
-            channel_id = before.channel.id
-            channel_name = before.channel.name
-            try:
-                if channel_id in active_pomodoros:
-                    task = active_pomodoros.pop(channel_id)
-                    task.cancel()
-
-                await before.channel.delete()
-                if channel_id in created_temp_channels: created_temp_channels.remove(channel_id)
-                
-                if channel_id in work_vc_start_times:
-                    start_time = work_vc_start_times.pop(channel_id)
-                    contents = work_vc_contents.pop(channel_id, [])
-                    duration = datetime.now(JST) - start_time
-                    hours, remainder = divmod(int(duration.total_seconds()), 3600)
-                    minutes, _ = divmod(remainder, 60)
-                    time_str = f"{hours}時間 {minutes}分" if hours > 0 else f"{minutes}分"
-                    
-                    log_channel = bot.get_channel(WORK_LOG_CHANNEL_ID)
-                    if log_channel:
-                        detail_text = ""
-                        for c in contents:
-                            detail_text += f"・**{c['name']}** さん ： *{c['content']}*\n"
-
-                        embed = discord.Embed(
-                            title="📝 本日の作業レポート",
-                            description=f"**{channel_name}** が解散しました！\n総作業時間: **{time_str}**\n\n**🎯 それぞれの作業内容：**\n{detail_text}\nみんなでお互いお疲れ様！👏",
-                            color=discord.Color.green()
-                        )
-                        await log_channel.send(embed=embed)
-            except Exception as e:
-                print(f"チャンネル削除エラー: {e}", flush=True)
-
-@bot.tree.command(name="set_pomo_time", description="【管理者用】ポモドーロタイマーの時間を設定します")
-@app_commands.describe(work_minutes="集中時間（分）", break_minutes="休憩時間（分）")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_pomo_time_command(interaction: discord.Interaction, work_minutes: int, break_minutes: int):
-    global POMODORO_WORK_MIN, POMODORO_BREAK_MIN
-    if work_minutes <= 0 or break_minutes <= 0:
-        await interaction.response.send_message("❌ 時間は1分以上で指定してください。", ephemeral=True)
-        return
-    POMODORO_WORK_MIN = work_minutes
-    POMODORO_BREAK_MIN = break_minutes
-    await save_all_config() 
-    await interaction.response.send_message(
-        f"✅ **ポモドーロタイマーの時間を設定しました！**\n⏱️ 集中: {work_minutes}分 / 休憩: {break_minutes}分"
-    )
-
-@bot.tree.command(name="set_pomo_audio", description="【管理者用】ポモドーロタイマーの通知音を設定します")
-@app_commands.describe(timing="タイミング", file="音声ファイル")
-@app_commands.choices(timing=[
-    app_commands.Choice(name="🔔 作業終了時", value="work_end"),
-    app_commands.Choice(name="⚔️ 休憩終了時", value="break_end")
-])
-@app_commands.checks.has_permissions(administrator=True)
-async def set_pomo_audio_command(interaction: discord.Interaction, timing: str, file: discord.Attachment):
-    global AUDIO_WORK_END_URL, AUDIO_BREAK_END_URL
-    await interaction.response.defer()
-    db_channel = bot.get_channel(AUDIO_DB_CHANNEL_ID)
-    if not db_channel:
-        await interaction.followup.send("❌ 音声保存用チャンネルが見つかりません。")
-        return
-    try:
-        file_bytes = await file.read()
-        bytes_io = io.BytesIO(file_bytes)
-        discord_file = discord.File(fp=bytes_io, filename=file.filename)
-        db_message = await db_channel.send(content=f"🎵 通知音: {timing}", file=discord_file)
-        saved_url = db_message.attachments[0].url
-        if timing == "work_end":
-            AUDIO_WORK_END_URL = saved_url
-        else:
-            AUDIO_BREAK_END_URL = saved_url
-        await save_all_config() 
-        await interaction.followup.send(f"✅ 通知音を登録しました！")
-    except Exception as e:
-        await interaction.followup.send(f"❌ エラーが発生しました: {e}")
-
-@bot.tree.command(name="setup_matching", description="【管理者用】マッチング受付パネルを設置します")
-@app_commands.checks.has_permissions(administrator=True)
-async def setup_matching_command(interaction: discord.Interaction):
-    await interaction.response.send_message(embed=create_panel_embed(), view=MatchingView())
-
-@bot.tree.command(name="matching_guard", description="指定したユーザーとマッチングしないようにブロック・解除します")
-@app_commands.describe(target_member="ブロック（または解除）するメンバー")
-async def matching_guard_command(interaction: discord.Interaction, target_member: discord.Member):
-    global ng_relations
-    user = interaction.user
-    if target_member.id == user.id:
-        await interaction.response.send_message("❌ 自分自身をブロックすることはできません。", ephemeral=True)
-        return
-    
-    if user.id not in ng_relations: 
-        ng_relations[user.id] = []
-        
-    # target_member.id (数値) で正しく比較してトグル処理
-    if target_member.id not in ng_relations[user.id]:
-        ng_relations[user.id].append(target_member.id)
-        await save_all_config()
-        await interaction.response.send_message(f"🔒 **{target_member.display_name}** さんに対するマッチングガードを設定しました（今後は同じ部屋になりません）。", ephemeral=True)
-    else:
-        ng_relations[user.id].remove(target_member.id)
-        await save_all_config()
-        await interaction.response.send_message(f"🔓 **{target_member.display_name}** さんへのマッチングガードを解除しました。", ephemeral=True)
-
-@bot.tree.command(name="add_odai", description="マッチング時の『お題』を追加します")
-@app_commands.describe(category="どのお題に追加しますか？", text="お題の文章")
-@app_commands.choices(category=[
-    app_commands.Choice(name="☕ 雑談", value="chat"),
-    app_commands.Choice(name="💓 恋バナ", value="love")
-])
-async def add_odai_command(interaction: discord.Interaction, category: str, text: str):
-    global ODAI_CHAT, ODAI_LOVE
-    formatted_odai = f"「{text}」"
-    if category == "chat":
-        formatted_odai = "☕" + formatted_odai
-        ODAI_CHAT.append(formatted_odai)
-    else:
-        formatted_odai = "💓" + formatted_odai
-        ODAI_LOVE.append(formatted_odai)
-    await save_all_config()
-    await interaction.response.send_message(f"✅ 新しいお題を追加しました！\n> **{formatted_odai}**")
-
-server_thread = threading.Thread(target=run_server)
-server_thread.daemon = True
-server_thread.start()
-
-if TOKEN: bot.run(TOKEN)
+        waiting_work =
