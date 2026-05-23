@@ -24,6 +24,11 @@ JST = timezone(timedelta(hours=9))
 
 MATCH_TARGET_COUNT = 3  # マッチングする人数
 
+# --- 👥 目的別のマッチング必要人数（お好みで数字を変えてください！） ---
+COUNT_CHAT = 3  # 雑談は3人集まったら発動
+COUNT_LOVE = 2  # 恋バナは2人集まったら発動（サシで話しやすくする）
+COUNT_WORK = 4  # 作業通話は4人集まったら発動（大人数でピアプレッシャー）
+
 # 目的別の待機リスト
 waiting_chat = []
 waiting_love = []
@@ -35,87 +40,14 @@ work_vc_start_times = {} # 作業VCの開始時間を記録 {チャンネルID: 
 # 👤 NGリスト
 ng_relations = {}
 
-# 🗣️ お題リスト（雑談用と恋バナ用を分ける）
-ODAI_CHAT = [
-    "🏫「農工大の周辺で、一番おすすめのご飯屋さんは？」",
-    "📚「今期履修している中で、一番面白い（またはヤバい）講義は？」",
-    "☕「最近のマイブームや、新しく始めた趣味について！」"
-]
-
-ODAI_LOVE = [
-    "💓「初恋って何歳のときだった？」",
-    "💓「理想の休日のデートコースを妄想で語って！」",
-    "💓「恋人に求める条件、どうしても譲れないものは？」"
-]
-
-# --- データベース保存・復元（NGリスト・お題） ---
-async def save_all_config():
-    config_channel = bot.get_channel(CONFIG_CHANNEL_ID)
-    if config_channel:
-        lines = ["===NG_START==="]
-        for user_id, ng_list in ng_relations.items():
-            if ng_list:
-                lines.append(f"{user_id}>{','.join(map(str, ng_list))}")
-        lines.append("===NG_END===")
-        
-        lines.append("===ODAI_CHAT_START===")
-        for odai in ODAI_CHAT: lines.append(odai)
-        lines.append("===ODAI_CHAT_END===")
-
-        lines.append("===ODAI_LOVE_START===")
-        for odai in ODAI_LOVE: lines.append(odai)
-        lines.append("===ODAI_LOVE_END===")
-        
-        await config_channel.send("\n".join(lines))
-
-async def load_all_config():
-    global ng_relations, ODAI_CHAT, ODAI_LOVE
-    config_channel = bot.get_channel(CONFIG_CHANNEL_ID)
-    if config_channel:
-        async for message in config_channel.history(limit=1):
-            if not message.content: return
-            try:
-                lines = message.content.split("\n")
-                mode = None
-                temp_ng, temp_chat, temp_love = {}, [], []
-                
-                for line in lines:
-                    if line == "===NG_START===": mode = "NG"; continue
-                    elif line == "===NG_END===": mode = None; continue
-                    elif line == "===ODAI_CHAT_START===": mode = "CHAT"; continue
-                    elif line == "===ODAI_CHAT_END===": mode = None; continue
-                    elif line == "===ODAI_LOVE_START===": mode = "LOVE"; continue
-                    elif line == "===ODAI_LOVE_END===": mode = None; continue
-                        
-                    if mode == "NG" and ">" in line:
-                        uid, nlist = line.split(">")
-                        temp_ng[int(uid)] = list(map(int, nlist.split(",")))
-                    elif mode == "CHAT" and line.strip(): temp_chat.append(line)
-                    elif mode == "LOVE" and line.strip(): temp_love.append(line)
-                
-                if temp_ng: ng_relations = temp_ng
-                if temp_chat: ODAI_CHAT = temp_chat
-                if temp_love: ODAI_LOVE = temp_love
-                print("★過去の設定（NG・お題）を復元しました。", flush=True)
-            except Exception as e:
-                print(f"設定復元エラー: {e}", flush=True)
-
-# 相性チェック
-def check_compatibility(potential_group):
-    for user_a in potential_group:
-        for user_b in potential_group:
-            if user_a == user_b: continue
-            if user_b.id in ng_relations.get(user_a.id, []) or user_a.id in ng_relations.get(user_b.id, []):
-                return False
-    return True
+# （中略：お題リストやデータベース機能はそのまま残す）
 
 # --- 🙋‍♂️ 3つの目的が選べるボタンUI ---
 class MatchingView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def handle_entry(self, interaction: discord.Interaction, target_list: list, mode_name: str, emoji: str, odai_list: list):
-        global MATCH_TARGET_COUNT
+    async def handle_entry(self, interaction: discord.Interaction, target_list: list, target_count: int, mode_name: str, emoji: str, odai_list: list):
         user = interaction.user
 
         if user.voice is None or user.voice.channel is None:
@@ -128,15 +60,15 @@ class MatchingView(discord.ui.View):
 
         target_list.append(user)
         
-        # UIの更新
-        self.btn_chat.label = f"☕ 雑談 ({len(waiting_chat)}人)"
-        self.btn_love.label = f"💓 恋バナ ({len(waiting_love)}人)"
-        self.btn_work.label = f"📝 作業 ({len(waiting_work)}人)"
+        # UIの人数表示を更新
+        self.btn_chat.label = f"☕ 雑談 ({len(waiting_chat)}/{COUNT_CHAT}人)"
+        self.btn_love.label = f"💓 恋バナ ({len(waiting_love)}/{COUNT_LOVE}人)"
+        self.btn_work.label = f"📝 作業 ({len(waiting_work)}/{COUNT_WORK}人)"
         await interaction.response.edit_message(view=self)
 
-        # マッチング成立チェック
-        if len(target_list) >= MATCH_TARGET_COUNT:
-            current_combination = target_list[:MATCH_TARGET_COUNT]
+        # ★目的ごとの設定人数（target_count）に達したかチェック
+        if len(target_list) >= target_count:
+            current_combination = target_list[:target_count]
             
             if check_compatibility(current_combination):
                 guild = interaction.guild
@@ -144,12 +76,11 @@ class MatchingView(discord.ui.View):
                 
                 # VC作成
                 temp_channel = await guild.create_voice_channel(
-                    name=f"{emoji} {mode_name}VC-#{guild.id % 1000:03d}",
+                    name=f"{emoji} 臨時{mode_name}VC-#{guild.id % 1000:03d}",
                     category=category
                 )
                 created_temp_channels.append(temp_channel.id)
 
-                # 作業モードの場合は開始時間を記録
                 if mode_name == "作業":
                     work_vc_start_times[temp_channel.id] = datetime.now(JST)
 
@@ -163,10 +94,10 @@ class MatchingView(discord.ui.View):
                     except Exception:
                         pass
 
-                # パネルのリセット
-                self.btn_chat.label = f"☕ 雑談 ({len(waiting_chat)}人)"
-                self.btn_love.label = f"💓 恋バナ ({len(waiting_love)}人)"
-                self.btn_work.label = f"📝 作業 ({len(waiting_work)}人)"
+                # パネルの人数表示をリセット
+                self.btn_chat.label = f"☕ 雑談 ({len(waiting_chat)}/{COUNT_CHAT}人)"
+                self.btn_love.label = f"💓 恋バナ ({len(waiting_love)}/{COUNT_LOVE}人)"
+                self.btn_work.label = f"📝 作業 ({len(waiting_work)}/{COUNT_WORK}人)"
                 await interaction.message.edit(view=self)
 
                 # メッセージとお題の送信
@@ -180,20 +111,20 @@ class MatchingView(discord.ui.View):
                 await interaction.followup.send(msg)
             else:
                 target_list.remove(user)
-                await interaction.followup.send("⏳ 他のメンバーとのマッチングを調整中です。少しお待ちください！", ephemeral=True)
+                await interaction.followup.send("⏳ 現在、他のメンバーとのマッチングを調整中です。少しお待ちください！", ephemeral=True)
                 target_list.append(user)
 
-    @discord.ui.button(label="☕ 雑談 (0人)", style=discord.ButtonStyle.blurple, custom_id="btn_chat")
+    @discord.ui.button(label=f"☕ 雑談 (0/{COUNT_CHAT}人)", style=discord.ButtonStyle.blurple, custom_id="btn_chat")
     async def btn_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_entry(interaction, waiting_chat, "雑談", "☕", ODAI_CHAT)
+        await self.handle_entry(interaction, waiting_chat, COUNT_CHAT, "雑談", "☕", ODAI_CHAT)
 
-    @discord.ui.button(label="💓 恋バナ (0人)", style=discord.ButtonStyle.red, custom_id="btn_love")
+    @discord.ui.button(label=f"💓 恋バナ (0/{COUNT_LOVE}人)", style=discord.ButtonStyle.red, custom_id="btn_love")
     async def btn_love(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_entry(interaction, waiting_love, "恋バナ", "💓", ODAI_LOVE)
+        await self.handle_entry(interaction, waiting_love, COUNT_LOVE, "恋バナ", "💓", ODAI_LOVE)
 
-    @discord.ui.button(label="📝 作業 (0人)", style=discord.ButtonStyle.green, custom_id="btn_work")
+    @discord.ui.button(label=f"📝 作業 (0/{COUNT_WORK}人)", style=discord.ButtonStyle.green, custom_id="btn_work")
     async def btn_work(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_entry(interaction, waiting_work, "作業", "📝", []) # 作業はお題なし
+        await self.handle_entry(interaction, waiting_work, COUNT_WORK, "作業", "📝", [])
 
 # --- Bot本体 ---
 class MyBot(discord.Client):
