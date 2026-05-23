@@ -33,7 +33,7 @@ JST = timezone(timedelta(hours=9))
 
 # マッチング必要人数
 COUNT_CHAT = 3  
-COUNT_LOVE = 2  
+COUNT_LOVE = 3  
 COUNT_WORK = 4  
 
 # 待機リスト
