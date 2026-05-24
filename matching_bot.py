@@ -32,39 +32,37 @@ PANEL_CHANNEL_ID = int(os.getenv("PANEL_CHANNEL_ID", "0"))
 AUDIO_DB_CHANNEL_ID = int(os.getenv("AUDIO_DB_CHANNEL_ID", "0")) 
 JST = timezone(timedelta(hours=9))
 
-# マッチング必要人数（デフォルト値）
+# パネルとマッチング関連の設定
+GAME_PANEL_CHANNEL_ID = 0
 COUNT_CHAT = 3  
 COUNT_LOVE = 2  
 COUNT_WORK = 4  
+COUNT_GAME = 2  
 
-# 待機リスト
 waiting_chat = []
 waiting_love = []
 waiting_work = [] 
+waiting_games = {} 
 
 created_temp_channels = []    
 work_vc_start_times = {}  
 work_vc_contents = {}     
 active_pomodoros = {}     
 
-# 👤 NGリスト (Key: user_id(int) -> Value: list of blocked_user_ids(int))
 ng_relations = {}
 
-# 🎵 音声URL設定
 AUDIO_WORK_END_URL = ""   
 AUDIO_BREAK_END_URL = ""  
-
-# ⏱️ ポモドーロタイマーの時間設定
 POMODORO_WORK_MIN = 25
 POMODORO_BREAK_MIN = 5
 
-# 🗣️ お題リスト
+game_list = ["GeoGuessr", "Gartic Phone", "お絵描きチャット", "Splatoon"]
+
 ODAI_CHAT = [
     "🏫「農工大の周辺で、ぶっちゃけ一番おすすめのご飯屋さんは？」",
     "📚「今期履修している中で、一番面白い（またはヤバい）講義は？」",
     "☕「最近のマイブームや、新しく始めた趣味について！」"
 ]
-
 ODAI_LOVE = [
     "💓「ぶっちゃけ、初恋って何歳のときだった？」",
     "💓「理想の休日のデートコースを妄想で語って！」",
@@ -76,11 +74,19 @@ async def save_all_config():
     config_channel = bot.get_channel(CONFIG_CHANNEL_ID)
     if not config_channel: return
         
-    lines = ["===NG_START==="]
+    lines = ["===CONFIG_VARS_START==="]
+    lines.append(f"GAME_PANEL_CHANNEL_ID>{GAME_PANEL_CHANNEL_ID}")
+    lines.append("===CONFIG_VARS_END===")
+
+    lines.append("===NG_START===")
     for user_id, ng_list in ng_relations.items():
         if ng_list: lines.append(f"{user_id}>{','.join(map(str, ng_list))}")
     lines.append("===NG_END===")
     
+    lines.append("===GAMES_START===")
+    for g in game_list: lines.append(g)
+    lines.append("===GAMES_END===")
+
     lines.append("===ODAI_CHAT_START===")
     for odai in ODAI_CHAT: lines.append(odai)
     lines.append("===ODAI_CHAT_END===")
@@ -109,7 +115,7 @@ async def save_all_config():
 
 async def load_all_config():
     global ng_relations, ODAI_CHAT, ODAI_LOVE, AUDIO_WORK_END_URL, AUDIO_BREAK_END_URL, POMODORO_WORK_MIN, POMODORO_BREAK_MIN
-    global COUNT_CHAT, COUNT_LOVE, COUNT_WORK
+    global COUNT_CHAT, COUNT_LOVE, COUNT_WORK, game_list, GAME_PANEL_CHANNEL_ID
     config_channel = bot.get_channel(CONFIG_CHANNEL_ID)
     if not config_channel: return
 
@@ -118,40 +124,37 @@ async def load_all_config():
         try:
             lines = message.content.split("\n")
             mode = None
-            temp_ng, temp_chat, temp_love = {}, [], []
+            temp_ng, temp_chat, temp_love, temp_games = {}, [], [], []
             
             for line in lines:
                 line = line.strip()
                 if not line: continue
                     
-                if line == "===NG_START===":
-                    mode = "NG"
-                elif line == "===NG_END===":
-                    mode = None
-                elif line == "===ODAI_CHAT_START===":
-                    mode = "CHAT"
-                elif line == "===ODAI_CHAT_END===":
-                    mode = None
-                elif line == "===ODAI_LOVE_START===":
-                    mode = "LOVE"
-                elif line == "===ODAI_LOVE_END===":
-                    mode = None
-                elif line == "===AUDIO_START===":
-                    mode = "AUDIO"
-                elif line == "===AUDIO_END===":
-                    mode = None
-                elif line == "===POMODORO_TIME_START===":
-                    mode = "POMODORO"
-                elif line == "===POMODORO_TIME_END===":
-                    mode = None
-                elif line == "===MATCH_COUNT_START===":
-                    mode = "MATCH_COUNT"
-                elif line == "===MATCH_COUNT_END===":
-                    mode = None
+                if line == "===NG_START===": mode = "NG"
+                elif line == "===NG_END===": mode = None
+                elif line == "===GAMES_START===": mode = "GAMES"
+                elif line == "===GAMES_END===": mode = None
+                elif line == "===ODAI_CHAT_START===": mode = "CHAT"
+                elif line == "===ODAI_CHAT_END===": mode = None
+                elif line == "===ODAI_LOVE_START===": mode = "LOVE"
+                elif line == "===ODAI_LOVE_END===": mode = None
+                elif line == "===AUDIO_START===": mode = "AUDIO"
+                elif line == "===AUDIO_END===": mode = None
+                elif line == "===POMODORO_TIME_START===": mode = "POMODORO"
+                elif line == "===POMODORO_TIME_END===": mode = None
+                elif line == "===MATCH_COUNT_START===": mode = "MATCH_COUNT"
+                elif line == "===MATCH_COUNT_END===": mode = None
+                elif line == "===CONFIG_VARS_START===": mode = "CONFIG_VARS"
+                elif line == "===CONFIG_VARS_END===": mode = None
                 else:
-                    if mode == "NG" and ">" in line:
+                    if mode == "CONFIG_VARS" and ">" in line:
+                        key, val = line.split(">", 1)
+                        if key == "GAME_PANEL_CHANNEL_ID": GAME_PANEL_CHANNEL_ID = int(val)
+                    elif mode == "NG" and ">" in line:
                         uid_str, nlist_str = line.split(">", 1)
                         if nlist_str: temp_ng[int(uid_str)] = [int(x) for x in nlist_str.split(",") if x.strip()]
+                    elif mode == "GAMES":
+                        temp_games.append(line)
                     elif mode == "CHAT":
                         temp_chat.append(line)
                     elif mode == "LOVE":
@@ -173,6 +176,7 @@ async def load_all_config():
             if temp_ng: ng_relations = temp_ng
             if temp_chat: ODAI_CHAT = temp_chat
             if temp_love: ODAI_LOVE = temp_love
+            if temp_games: game_list = temp_games
             print(f"★設定復元完了", flush=True)
         except Exception as e:
             print(f"設定復元エラー: {e}", flush=True)
@@ -200,11 +204,123 @@ def create_panel_embed():
         color=discord.Color.blurple()
     )
 
+def create_game_panel_embed():
+    return discord.Embed(
+        title="🎮 ゲーム待合パネル",
+        description=(
+            "遊びたいゲームのボタンを押してね！\n"
+            f"**{COUNT_GAME}人** 揃うと、専用のボイスチャンネルが自動で作成されます。\n"
+            "足りない人数はCPUを追加して遊んだり、後から「稼働中の部屋に合流」で入ってもらうことも可能です！\n\n"
+            "💡 **流行りのゲームがない？**\n"
+            "管理者に頼めば `/add_game` でいつでも新しいゲームを追加できます！"
+        ),
+        color=discord.Color.brand_green()
+    )
+
+# --- ゲーム用：部屋コード入力モーダルとビュー ---
+class GameCodeModal(discord.ui.Modal):
+    def __init__(self, target_message: discord.Message):
+        super().__init__(title="部屋情報を共有", timeout=None)
+        self.target_message = target_message
+        self.code_input = discord.ui.TextInput(
+            label="部屋コードやURLを入力",
+            style=discord.TextStyle.short,
+            placeholder="例: ABCD-EFGH または https://...",
+            required=True
+        )
+        self.add_item(self.code_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # 既存のメッセージから前のコード部分を切り落として上書き
+        base_content = self.target_message.content.split("\n\n🎫")[0]
+        new_content = f"{base_content}\n\n🎫 **現在の部屋情報:**\n`{self.code_input.value}`\n*(更新者: {interaction.user.display_name})*"
+        await self.target_message.edit(content=new_content)
+        await interaction.response.send_message("✅ 部屋情報を更新しました！", ephemeral=True)
+
+class GameRoomCodeView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(label="🎫 部屋コード/URLを設定", style=discord.ButtonStyle.success, custom_id="btn_set_game_code")
+    async def set_code(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(GameCodeModal(interaction.message))
+
+# --- ゲーム用：動的ボタンとパネルの更新 ---
+async def update_all_game_panels():
+    if GAME_PANEL_CHANNEL_ID == 0: return
+    channel = bot.get_channel(GAME_PANEL_CHANNEL_ID)
+    if not channel: return
+    async for message in channel.history(limit=10):
+        if message.author == bot.user and message.embeds and "ゲーム待合" in message.embeds[0].title:
+            await message.edit(embed=create_game_panel_embed(), view=GameMatchingView())
+            break
+
+class GameButton(discord.ui.Button):
+    def __init__(self, game: str):
+        count = len(waiting_games.get(game, []))
+        super().__init__(label=f"🎮 {game} ({count}/{COUNT_GAME}人)", style=discord.ButtonStyle.blurple, custom_id=f"btn_game_{game}")
+        self.game = game
+
+    async def callback(self, interaction: discord.Interaction):
+        user = interaction.user
+        if user.voice is None or user.voice.channel is None:
+            await interaction.response.send_message("❌ 先にどこかのボイスチャンネルに入室してください！", ephemeral=True)
+            return
+
+        if self.game not in waiting_games: waiting_games[self.game] = []
+        target_list = waiting_games[self.game]
+
+        if user in target_list:
+            target_list.remove(user)
+            await interaction.response.defer()
+            await update_all_game_panels()
+            await interaction.followup.send(f"➔ {self.game} へのエントリーを取り消しました。", ephemeral=True)
+            return
+
+        target_list.append(user)
+        await interaction.response.defer()
+        await update_all_game_panels()
+
+        if len(target_list) >= COUNT_GAME:
+            current_combination = target_list[:COUNT_GAME]
+            if check_compatibility(current_combination):
+                guild = interaction.guild
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True),
+                    guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True)
+                }
+                for member in current_combination: overwrites[member] = discord.PermissionOverwrite(connect=True)
+
+                temp_channel = await guild.create_voice_channel(name=f"🎮 {self.game}-#{guild.id % 100:02d}", category=user.voice.channel.category, overwrites=overwrites)
+                created_temp_channels.append(temp_channel.id)
+
+                for member in current_combination:
+                    if member in target_list: target_list.remove(member)
+                    try: await member.move_to(temp_channel)
+                    except: pass
+
+                await update_all_game_panels()
+
+                # VC内に部屋コード設定ボタン付きのメッセージを送信
+                msg = await temp_channel.send(f"🎉 **{self.game} のマッチングが成立しました！**\nホストを決めて、下のボタンから部屋のコードやURLを共有してね！\n*(回線落ちなどで部屋を作り直す場合も、ボタンから上書きできます)*", view=GameRoomCodeView())
+                try: await msg.pin()
+                except: pass
+            else:
+                target_list.remove(user)
+                await interaction.followup.send("⏳ 相性調整のため待機中です。", ephemeral=True)
+                target_list.append(user)
+
+class GameMatchingView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        for game in game_list:
+            self.add_item(GameButton(game))
+
+# --- 既存のUI要素（お題リロール、ポモドーロなど） ---
 class OdaiRerollView(discord.ui.View):
     def __init__(self, category: str):
         super().__init__(timeout=None)
         self.category = category
-
     @discord.ui.button(label="🎲 次のお題を引く", style=discord.ButtonStyle.blurple, custom_id="btn_reroll_odai")
     async def reroll_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         odai_list = ODAI_CHAT if self.category == "chat" else ODAI_LOVE
@@ -266,7 +382,6 @@ class PomodoroView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ 現在作動中のタイマーはありません。", ephemeral=True)
 
-# --- 途中合流用のドロップダウンメニュー ---
 class ActiveVCDropdown(discord.ui.Select):
     def __init__(self, active_vcs):
         options = []
@@ -291,7 +406,6 @@ class ActiveVCDropdown(discord.ui.Select):
             await interaction.response.send_message("🔒 相性調整の制限により、この部屋には合流できません。", ephemeral=True)
             return
 
-        # 鍵を開けて引き入れる
         overwrite = vc.overwrites_for(user)
         overwrite.connect = True
         await vc.set_permissions(user, overwrite=overwrite)
@@ -350,7 +464,6 @@ class MatchingView(discord.ui.View):
             current_combination = target_list[:target_count]
             if check_compatibility(current_combination):
                 guild = interaction.guild
-                # VCをプライベート（鍵付き）で作成
                 overwrites = {
                     guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True),
                     guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True)
@@ -399,7 +512,6 @@ class MatchingView(discord.ui.View):
             
             if check_compatibility(users_to_match):
                 guild = interaction.guild
-                # VCをプライベート（鍵付き）で作成
                 overwrites = {
                     guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True),
                     guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True)
@@ -455,6 +567,7 @@ class MatchingView(discord.ui.View):
             return
         await interaction.response.send_message("合流したい部屋を選んでください！", view=ActiveVCDropdownView(active_vcs), ephemeral=True)
 
+
 class MyBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -463,7 +576,6 @@ class MyBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
     async def setup_hook(self):
-        self.add_view(MatchingView())
         await self.tree.sync()
 
 bot = MyBot()
@@ -473,6 +585,11 @@ async def on_ready():
     print(f"====================================", flush=True)
     print(f"ログイン成功: {bot.user.name} が起動しました！", flush=True)
     await load_all_config()
+    
+    # 永続Viewの登録
+    bot.add_view(MatchingView())
+    bot.add_view(GameMatchingView())
+    bot.add_view(GameRoomCodeView())
     
     panel_channel = bot.get_channel(PANEL_CHANNEL_ID)
     if panel_channel:
@@ -488,12 +605,14 @@ async def on_ready():
             v = MatchingView()
             v.update_labels()
             await panel_channel.send(embed=create_panel_embed(), view=v)
+            
+    await update_all_game_panels()
     print(f"====================================", flush=True)
 
 @bot.event
 async def on_voice_state_update(member, before, after):
     global created_temp_channels, work_vc_start_times, work_vc_contents, active_pomodoros
-    if before.channel is not None and "臨時" in before.channel.name:
+    if before.channel is not None and ("臨時" in before.channel.name or "部屋" in before.channel.name or "🎮" in before.channel.name):
         humans = [m for m in before.channel.members if not m.bot]
         if len(humans) == 0:
             channel_id = before.channel.id
@@ -503,6 +622,7 @@ async def on_voice_state_update(member, before, after):
                 await before.channel.delete()
                 if channel_id in created_temp_channels: created_temp_channels.remove(channel_id)
                 
+                # 作業VCの記録処理
                 if channel_id in work_vc_start_times:
                     start_time = work_vc_start_times.pop(channel_id)
                     contents = work_vc_contents.pop(channel_id, [])
@@ -519,82 +639,48 @@ async def on_voice_state_update(member, before, after):
             except Exception as e:
                 print(f"チャンネル削除エラー: {e}", flush=True)
 
-@bot.tree.command(name="set_match_count", description="【管理者用】各募集のマッチング必要人数を変更します")
-@app_commands.describe(category="変更する項目", count="必要人数 (1〜10人)")
-@app_commands.choices(category=[
-    app_commands.Choice(name="☕ 雑談", value="chat"),
-    app_commands.Choice(name="💓 恋バナ", value="love"),
-    app_commands.Choice(name="📝 作業", value="work")
-])
-@app_commands.checks.has_permissions(administrator=True)
-async def set_match_count_command(interaction: discord.Interaction, category: str, count: int):
-    global COUNT_CHAT, COUNT_LOVE, COUNT_WORK
-    if count < 1 or count > 10:
-        await interaction.response.send_message("❌ 人数は1人〜10人の間で指定してください。", ephemeral=True)
-        return
-    await interaction.response.defer()
-    if category == "chat": COUNT_CHAT = count
-    elif category == "love": COUNT_LOVE = count
-    elif category == "work": COUNT_WORK = count
-    await save_all_config()
-    
-    panel_channel = bot.get_channel(PANEL_CHANNEL_ID)
-    if panel_channel:
-        async for message in panel_channel.history(limit=10):
-            if message.author == bot.user and message.components:
-                if any(component.custom_id == "btn_chat" for action_row in message.components for component in action_row.children):
-                    v = MatchingView()
-                    v.update_labels()
-                    await message.edit(embed=create_panel_embed(), view=v)
-                    break
-    labels = {"chat": "雑談", "love": "恋バナ", "work": "作業"}
-    await interaction.followup.send(f"✅ **{labels[category]}** のマッチング必要人数を **{count}人** に変更し、パネルを更新しました！")
-
-@bot.tree.command(name="set_pomo_time", description="【管理者用】ポモドーロタイマーの時間を設定します")
-@app_commands.describe(work_minutes="集中時間（分）", break_minutes="休憩時間（分）")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_pomo_time_command(interaction: discord.Interaction, work_minutes: int, break_minutes: int):
-    global POMODORO_WORK_MIN, POMODORO_BREAK_MIN
-    if work_minutes <= 0 or break_minutes <= 0:
-        await interaction.response.send_message("❌ 時間は1分以上で指定してください。", ephemeral=True)
-        return
-    POMODORO_WORK_MIN = work_minutes
-    POMODORO_BREAK_MIN = break_minutes
-    await save_all_config() 
-    await interaction.response.send_message(f"✅ **ポモドーロタイマーの時間を設定しました！**\n⏱️ 集中: {work_minutes}分 / 休憩: {break_minutes}分")
-
-@bot.tree.command(name="set_pomo_audio", description="【管理者用】ポモドーロタイマーの通知音を設定します")
-@app_commands.describe(timing="タイミング", file="音声ファイル")
-@app_commands.choices(timing=[
-    app_commands.Choice(name="🔔 作業終了時", value="work_end"),
-    app_commands.Choice(name="⚔️ 休憩終了時", value="break_end")
-])
-@app_commands.checks.has_permissions(administrator=True)
-async def set_pomo_audio_command(interaction: discord.Interaction, timing: str, file: discord.Attachment):
-    global AUDIO_WORK_END_URL, AUDIO_BREAK_END_URL
-    await interaction.response.defer()
-    db_channel = bot.get_channel(AUDIO_DB_CHANNEL_ID)
-    if not db_channel:
-        await interaction.followup.send("❌ 音声保存用チャンネルが見つかりません。")
-        return
-    try:
-        file_bytes = await file.read()
-        discord_file = discord.File(fp=io.BytesIO(file_bytes), filename=file.filename)
-        db_message = await db_channel.send(content=f"🎵 通知音: {timing}", file=discord_file)
-        saved_url = db_message.attachments[0].url
-        if timing == "work_end": AUDIO_WORK_END_URL = saved_url
-        else: AUDIO_BREAK_END_URL = saved_url
-        await save_all_config() 
-        await interaction.followup.send(f"✅ 通知音を登録しました！")
-    except Exception as e:
-        await interaction.followup.send(f"❌ エラーが発生しました: {e}")
-
-@bot.tree.command(name="setup_matching", description="【管理者用】マッチング受付パネルを設置します")
+# --- コマンド一覧 ---
+@bot.tree.command(name="setup_matching", description="【管理者用】通常マッチングパネルを設置します")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_matching_command(interaction: discord.Interaction):
     v = MatchingView()
     v.update_labels()
     await interaction.response.send_message(embed=create_panel_embed(), view=v)
+
+@bot.tree.command(name="setup_game_panel", description="【管理者用】ゲーム専用マッチングパネルを設置します")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_game_panel_command(interaction: discord.Interaction):
+    global GAME_PANEL_CHANNEL_ID
+    GAME_PANEL_CHANNEL_ID = interaction.channel.id
+    await save_all_config()
+    await interaction.response.send_message(embed=create_game_panel_embed(), view=GameMatchingView())
+
+@bot.tree.command(name="add_game", description="【管理者用】マッチング用ゲームを追加します")
+@app_commands.describe(game_name="追加するゲーム名")
+@app_commands.checks.has_permissions(administrator=True)
+async def add_game_command(interaction: discord.Interaction, game_name: str):
+    global game_list
+    if game_name in game_list:
+        await interaction.response.send_message(f"⚠️ ゲーム「{game_name}」は既に登録されています！", ephemeral=True)
+        return
+    game_list.append(game_name)
+    await save_all_config()
+    await update_all_game_panels()
+    await interaction.response.send_message(f"✅ ゲーム「{game_name}」を追加し、パネルを更新しました！")
+
+@bot.tree.command(name="remove_game", description="【管理者用】マッチング用ゲームを削除します")
+@app_commands.describe(game_name="削除するゲーム名")
+@app_commands.checks.has_permissions(administrator=True)
+async def remove_game_command(interaction: discord.Interaction, game_name: str):
+    global game_list
+    if game_name not in game_list:
+        await interaction.response.send_message(f"⚠️ ゲーム「{game_name}」は見つかりません。", ephemeral=True)
+        return
+    game_list.remove(game_name)
+    if game_name in waiting_games: del waiting_games[game_name]
+    await save_all_config()
+    await update_all_game_panels()
+    await interaction.response.send_message(f"🗑️ ゲーム「{game_name}」を削除し、パネルを更新しました。")
 
 @bot.tree.command(name="matching_guard", description="指定したユーザーとマッチングしないようにブロック・解除します")
 @app_commands.describe(target_member="ブロック（または解除）するメンバー")
@@ -614,24 +700,6 @@ async def matching_guard_command(interaction: discord.Interaction, target_member
         ng_relations[user.id].remove(target_member.id)
         await save_all_config()
         await interaction.response.send_message(f"🔓 **{target_member.display_name}** さんへのマッチングガードを解除しました。", ephemeral=True)
-
-@bot.tree.command(name="add_odai", description="マッチング時の『お題』を追加します")
-@app_commands.describe(category="どのお題に追加しますか？", text="お題の文章")
-@app_commands.choices(category=[
-    app_commands.Choice(name="☕ 雑談", value="chat"),
-    app_commands.Choice(name="💓 恋バナ", value="love")
-])
-async def add_odai_command(interaction: discord.Interaction, category: str, text: str):
-    global ODAI_CHAT, ODAI_LOVE
-    formatted_odai = f"「{text}」"
-    if category == "chat":
-        formatted_odai = "☕" + formatted_odai
-        ODAI_CHAT.append(formatted_odai)
-    else:
-        formatted_odai = "💓" + formatted_odai
-        ODAI_LOVE.append(formatted_odai)
-    await save_all_config()
-    await interaction.response.send_message(f"✅ 新しいお題を追加しました！\n> **{formatted_odai}**")
 
 server_thread = threading.Thread(target=run_server)
 server_thread.daemon = True
