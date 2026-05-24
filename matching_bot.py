@@ -194,7 +194,7 @@ def create_panel_embed():
         title="🚪 キャンパス ラウンジガチャ",
         description=(
             "今の気分に合わせてボタンを押してね！\n"
-            "人数が集まると、**鍵付きの専用VC**に自動で引きずり込まれます。\n\n"
+            "人数が集まると、**完全隠し仕様の専用VC**に自動で引きずり込まれます。\n\n"
             f"☕ **雑談**（{COUNT_CHAT}人〜）：気軽な話題でワイワイ\n"
             f"💓 **恋バナ**（{COUNT_LOVE}人〜）：専用の甘酸っぱいお題が出ます\n"
             f"📝 **作業**（{COUNT_WORK}人〜）：集中モード！解散時に時間が記録されます✍️\n\n"
@@ -231,7 +231,6 @@ class GameCodeModal(discord.ui.Modal):
         self.add_item(self.code_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 既存のメッセージから前のコード部分を切り落として上書き
         base_content = self.target_message.content.split("\n\n🎫")[0]
         new_content = f"{base_content}\n\n🎫 **現在の部屋情報:**\n`{self.code_input.value}`\n*(更新者: {interaction.user.display_name})*"
         await self.target_message.edit(content=new_content)
@@ -285,11 +284,22 @@ class GameButton(discord.ui.Button):
             current_combination = target_list[:COUNT_GAME]
             if check_compatibility(current_combination):
                 guild = interaction.guild
+                
+                # 【変更】即席ロールの作成
+                role_name = f"⏳-{self.game}-#{guild.id % 100:02d}"
+                temp_role = await guild.create_role(name=role_name, reason="臨時ゲームVC用ロール")
+                
+                # メンバーにロール付与
+                for member in current_combination:
+                    try: await member.add_roles(temp_role)
+                    except: pass
+
+                # 権限の設定（@everyoneは非表示・接続不可 / 臨時ロールは表示・接続許可）
                 overwrites = {
-                    guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True),
-                    guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True)
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+                    guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True),
+                    temp_role: discord.PermissionOverwrite(view_channel=True, connect=True)
                 }
-                for member in current_combination: overwrites[member] = discord.PermissionOverwrite(connect=True)
 
                 temp_channel = await guild.create_voice_channel(name=f"🎮 {self.game}-#{guild.id % 100:02d}", category=user.voice.channel.category, overwrites=overwrites)
                 created_temp_channels.append(temp_channel.id)
@@ -301,7 +311,6 @@ class GameButton(discord.ui.Button):
 
                 await update_all_game_panels()
 
-                # VC内に部屋コード設定ボタン付きのメッセージを送信
                 msg = await temp_channel.send(f"🎉 **{self.game} のマッチングが成立しました！**\nホストを決めて、下のボタンから部屋のコードやURLを共有してね！\n*(回線落ちなどで部屋を作り直す場合も、ボタンから上書きできます)*", view=GameRoomCodeView())
                 try: await msg.pin()
                 except: pass
@@ -406,9 +415,24 @@ class ActiveVCDropdown(discord.ui.Select):
             await interaction.response.send_message("🔒 相性調整の制限により、この部屋には合流できません。", ephemeral=True)
             return
 
-        overwrite = vc.overwrites_for(user)
-        overwrite.connect = True
-        await vc.set_permissions(user, overwrite=overwrite)
+        # 【変更】チャンネルに設定されている臨時ロールを探してユーザーに付与
+        target_role = None
+        for target in vc.overwrites:
+            if isinstance(target, discord.Role) and target.name.startswith("⏳-"):
+                target_role = target
+                break
+
+        if target_role:
+            try: await user.add_roles(target_role)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ ロール付与権限エラー: {e}", ephemeral=True)
+                return
+        else:
+            # 万が一ロールが見つからなかった場合のセーフティ
+            overwrite = vc.overwrites_for(user)
+            overwrite.view_channel = True
+            overwrite.connect = True
+            await vc.set_permissions(user, overwrite=overwrite)
         
         try:
             await user.move_to(vc)
@@ -464,11 +488,22 @@ class MatchingView(discord.ui.View):
             current_combination = target_list[:target_count]
             if check_compatibility(current_combination):
                 guild = interaction.guild
+                
+                # 【変更】即席ロールの作成
+                role_name = f"⏳-{mode_name}-#{guild.id % 100:02d}"
+                temp_role = await guild.create_role(name=role_name, reason="臨時通常VC用ロール")
+                
+                # メンバーにロール付与
+                for member in current_combination:
+                    try: await member.add_roles(temp_role)
+                    except: pass
+
+                # 権限の設定（非表示・入室不可化）
                 overwrites = {
-                    guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True),
-                    guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True)
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+                    guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True),
+                    temp_role: discord.PermissionOverwrite(view_channel=True, connect=True)
                 }
-                for member in current_combination: overwrites[member] = discord.PermissionOverwrite(connect=True)
 
                 temp_channel = await guild.create_voice_channel(name=f"{emoji} 臨時{mode_name}VC-#{guild.id % 100:02d}", category=user.voice.channel.category, overwrites=overwrites)
                 created_temp_channels.append(temp_channel.id)
@@ -512,11 +547,22 @@ class MatchingView(discord.ui.View):
             
             if check_compatibility(users_to_match):
                 guild = interaction.guild
+                
+                # 【変更】即席ロールの作成
+                role_name = f"⏳-作業-#{guild.id % 100:02d}"
+                temp_role = await guild.create_role(name=role_name, reason="臨時作業VC用ロール")
+                
+                # メンバーにロール付与
+                for member in users_to_match:
+                    try: await member.add_roles(temp_role)
+                    except: pass
+
+                # 権限の設定（非表示・入室不可化）
                 overwrites = {
-                    guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True),
-                    guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True)
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+                    guild.me: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True),
+                    temp_role: discord.PermissionOverwrite(view_channel=True, connect=True)
                 }
-                for member in users_to_match: overwrites[member] = discord.PermissionOverwrite(connect=True)
 
                 temp_channel = await guild.create_voice_channel(name=f"📝 臨時作業VC-#{guild.id % 100:02d}", category=user.voice.channel.category, overwrites=overwrites)
                 created_temp_channels.append(temp_channel.id)
@@ -586,7 +632,6 @@ async def on_ready():
     print(f"ログイン成功: {bot.user.name} が起動しました！", flush=True)
     await load_all_config()
     
-    # 永続Viewの登録
     bot.add_view(MatchingView())
     bot.add_view(GameMatchingView())
     bot.add_view(GameRoomCodeView())
@@ -619,6 +664,15 @@ async def on_voice_state_update(member, before, after):
             channel_name = before.channel.name
             try:
                 if channel_id in active_pomodoros: active_pomodoros.pop(channel_id).cancel()
+                
+                # 【変更】チャンネル削除前に、紐づいている臨時ロール（⏳- から始まるもの）を自動削除
+                for target in before.channel.overwrites:
+                    if isinstance(target, discord.Role) and target.name.startswith("⏳-"):
+                        try:
+                            await target.delete(reason="臨時VC解散によるロールの自動削除")
+                        except Exception as re:
+                            print(f"臨時ロールの削除に失敗しました: {re}", flush=True)
+
                 await before.channel.delete()
                 if channel_id in created_temp_channels: created_temp_channels.remove(channel_id)
                 
