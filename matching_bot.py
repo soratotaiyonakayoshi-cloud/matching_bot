@@ -134,13 +134,14 @@ async def save_all_config():
     lines.append(f"CHAT>{COUNT_CHAT}")
     lines.append(f"LOVE>{COUNT_LOVE}")
     lines.append(f"WORK>{COUNT_WORK}")
+    lines.append(f"GAME>{COUNT_GAME}")
     lines.append("===MATCH_COUNT_END===")
     
     await config_channel.send("\n".join(lines))
 
 async def load_all_config():
     global ng_relations, ODAI_CHAT, ODAI_LOVE, AUDIO_WORK_END_URL, AUDIO_BREAK_END_URL, POMODORO_WORK_MIN, POMODORO_BREAK_MIN
-    global COUNT_CHAT, COUNT_LOVE, COUNT_WORK, game_list, GAME_PANEL_CHANNEL_ID
+    global COUNT_CHAT, COUNT_LOVE, COUNT_WORK, COUNT_GAME, game_list, GAME_PANEL_CHANNEL_ID
     config_channel = bot.get_channel(CONFIG_CHANNEL_ID)
     if not config_channel: return
 
@@ -197,6 +198,7 @@ async def load_all_config():
                         if key == "CHAT": COUNT_CHAT = int(val)
                         elif key == "LOVE": COUNT_LOVE = int(val)
                         elif key == "WORK": COUNT_WORK = int(val)
+                        elif key == "GAME": COUNT_GAME = int(val)
                             
             if temp_ng: ng_relations = temp_ng
             if temp_chat: ODAI_CHAT = temp_chat
@@ -749,6 +751,35 @@ async def setup_game_panel_command(interaction: discord.Interaction):
     GAME_PANEL_CHANNEL_ID = interaction.channel.id
     await save_all_config()
     await interaction.response.send_message(embed=create_game_panel_embed(), view=GameMatchingView())
+
+@bot.tree.command(name="set_match_count", description="【管理者用】各マッチングの最低人数を変更します")
+@app_commands.describe(chat="雑談の最低人数", love="恋バナの最低人数", work="作業の最低人数", game="ゲームの最低人数")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_match_count_command(interaction: discord.Interaction, chat: int = None, love: int = None, work: int = None, game: int = None):
+    global COUNT_CHAT, COUNT_LOVE, COUNT_WORK, COUNT_GAME
+    changes = []
+    if chat is not None and chat >= 1: COUNT_CHAT = chat; changes.append(f"雑談={chat}")
+    if love is not None and love >= 1: COUNT_LOVE = love; changes.append(f"恋バナ={love}")
+    if work is not None and work >= 1: COUNT_WORK = work; changes.append(f"作業={work}")
+    if game is not None and game >= 1: COUNT_GAME = game; changes.append(f"ゲーム={game}")
+    if not changes:
+        await interaction.response.send_message("変更したい人数を1以上で指定してください（例: work:1）。", ephemeral=True)
+        return
+    await save_all_config()
+
+    # 通常パネルのラベル更新
+    panel_channel = bot.get_channel(PANEL_CHANNEL_ID)
+    if panel_channel:
+        async for message in panel_channel.history(limit=10):
+            if message.author == bot.user and message.components and any(
+                c.custom_id == "btn_chat" for row in message.components for c in row.children
+            ):
+                v = MatchingView(); v.update_labels()
+                await message.edit(embed=create_panel_embed(), view=v)
+                break
+    await update_all_game_panels()
+
+    await interaction.response.send_message(f"✅ 最低人数を更新しました： {', '.join(changes)}", ephemeral=True)
 
 @bot.tree.command(name="add_game", description="【管理者用】マッチング用ゲームを追加します")
 @app_commands.describe(game_name="追加するゲーム名")
