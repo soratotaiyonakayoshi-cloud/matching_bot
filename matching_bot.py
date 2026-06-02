@@ -4,6 +4,7 @@ import random
 import asyncio
 import os
 import io
+import aiohttp
 from flask import Flask
 import threading
 from datetime import datetime, timezone, timedelta
@@ -29,8 +30,32 @@ TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 CONFIG_CHANNEL_ID = int(os.getenv("CONFIG_CHANNEL_ID", "0"))
 WORK_LOG_CHANNEL_ID = int(os.getenv("WORK_LOG_CHANNEL_ID", "0"))
 PANEL_CHANNEL_ID = int(os.getenv("PANEL_CHANNEL_ID", "0"))
-AUDIO_DB_CHANNEL_ID = int(os.getenv("AUDIO_DB_CHANNEL_ID", "0")) 
+AUDIO_DB_CHANNEL_ID = int(os.getenv("AUDIO_DB_CHANNEL_ID", "0"))
 JST = timezone(timedelta(hours=9))
+
+# --- Supabase（みんなで暗記と共有のデータ基盤）---
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+async def record_work_sessions(rows):
+    """作業セッションを Supabase の work_sessions に一括記録（通信簿の基盤）。"""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not rows:
+        return
+    url = f"{SUPABASE_URL}/rest/v1/work_sessions"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=rows) as resp:
+                if resp.status >= 300:
+                    body = await resp.text()
+                    print(f"Supabase 作業記録エラー {resp.status}: {body}", flush=True)
+    except Exception as e:
+        print(f"Supabase 作業記録の送信に失敗: {e}", flush=True)
 
 # パネルとマッチング関連の設定
 GAME_PANEL_CHANNEL_ID = 0
@@ -568,7 +593,7 @@ class MatchingView(discord.ui.View):
                 created_temp_channels.append(temp_channel.id)
 
                 work_vc_start_times[temp_channel.id] = datetime.now(JST)
-                work_vc_contents[temp_channel.id] = [{"name": w["user"].display_name, "content": w["content"]} for w in current_combination]
+                work_vc_contents[temp_channel.id] = [{"id": w["user"].id, "name": w["user"].display_name, "content": w["content"]} for w in current_combination]
 
                 for item in current_combination:
                     if item in waiting_work: waiting_work.remove(item)
@@ -680,11 +705,27 @@ async def on_voice_state_update(member, before, after):
                 if channel_id in work_vc_start_times:
                     start_time = work_vc_start_times.pop(channel_id)
                     contents = work_vc_contents.pop(channel_id, [])
-                    duration = datetime.now(JST) - start_time
-                    hours, remainder = divmod(int(duration.total_seconds()), 3600)
+                    end_time = datetime.now(JST)
+                    duration = end_time - start_time
+                    duration_sec = int(duration.total_seconds())
+                    hours, remainder = divmod(duration_sec, 3600)
                     minutes, _ = divmod(remainder, 60)
                     time_str = f"{hours}時間 {minutes}分" if hours > 0 else f"{minutes}分"
-                    
+
+                    # Supabase に各参加者の作業セッションを記録（通信簿の基盤）
+                    rows = [{
+                        "discord_id": str(c["id"]),
+                        "display_name": c.get("name"),
+                        "content": c.get("content"),
+                        "duration_sec": duration_sec,
+                        "started_at": start_time.isoformat(),
+                        "ended_at": end_time.isoformat(),
+                        "channel_name": channel_name,
+                        "guild_id": str(before.channel.guild.id),
+                    } for c in contents if c.get("id")]
+                    if rows:
+                        asyncio.create_task(record_work_sessions(rows))
+
                     log_channel = bot.get_channel(WORK_LOG_CHANNEL_ID)
                     if log_channel:
                         detail_text = "".join([f"・**{c['name']}** さん ： *{c['content']}*\n" for c in contents])
