@@ -1,5 +1,6 @@
 import discord
 from discord import app_commands
+from discord.ext import tasks
 import random
 import asyncio
 import os
@@ -80,6 +81,40 @@ GAME_PANEL_CHANNEL_ID = 0
 COUNT_CHAT, COUNT_LOVE, COUNT_WORK, COUNT_GAME = 3, 2, 4, 2
 waiting_chat, waiting_love, waiting_work = [], [], []
 waiting_games = {}
+
+# ============================================================
+#  待機リストの掃除（古い・幽霊エントリー対策）
+#  ・エントリーは「VCに入っていること」が条件なので、VCから抜けた／
+#    Discordを閉じた（オフライン）人は member.voice が None になる。
+#  ・これを使って、VCにいない人を待機リストから自動除外する。
+#    → 数日前に解除し忘れた人が枠を占有し、幽霊エントリーで
+#      マッチが空振り（誰も移動できないVCが立つ）する問題を防ぐ。
+# ============================================================
+def _is_in_voice(m):
+    try:
+        return bool(m and m.voice and m.voice.channel)
+    except Exception:
+        return False
+
+def _fresh(member, guild):
+    """ボイス状態を最新化するためギルドからメンバーを取り直す。"""
+    if guild is None:
+        return member
+    return guild.get_member(member.id) or member
+
+def prune_waiting(guild=None):
+    """VCにいない人を全待機リストから除外。除外があれば True。"""
+    global waiting_chat, waiting_love, waiting_work, waiting_games
+    before = (len(waiting_chat), len(waiting_love), len(waiting_work),
+              sum(len(v) for v in waiting_games.values()))
+    waiting_chat[:] = [m for m in waiting_chat if _is_in_voice(_fresh(m, guild))]
+    waiting_love[:] = [m for m in waiting_love if _is_in_voice(_fresh(m, guild))]
+    waiting_work[:] = [w for w in waiting_work if _is_in_voice(_fresh(w["user"], guild))]
+    for game, lst in list(waiting_games.items()):
+        lst[:] = [m for m in lst if _is_in_voice(_fresh(m, guild))]
+    after = (len(waiting_chat), len(waiting_love), len(waiting_work),
+             sum(len(v) for v in waiting_games.values()))
+    return before != after
 ng_relations = {}
 
 AUDIO_WORK_END_URL = ""
@@ -232,6 +267,35 @@ async def update_all_game_panels():
             await message.edit(embed=create_game_panel_embed(), view=GameMatchingView())
             break
 
+async def refresh_main_panel():
+    """通常マッチングパネルの人数ラベルを最新化する。"""
+    if PANEL_CHANNEL_ID == 0:
+        return
+    channel = bot.get_channel(PANEL_CHANNEL_ID)
+    if not channel:
+        return
+    async for message in channel.history(limit=10):
+        if message.author == bot.user and message.components and any(
+            getattr(c, "custom_id", None) == "btn_chat" for row in message.components for c in row.children
+        ):
+            v = MatchingView(); v.update_labels()
+            await message.edit(embed=create_panel_embed(), view=v)
+            break
+
+@tasks.loop(seconds=90)
+async def prune_loop():
+    """定期的に幽霊エントリー（VC不在）を掃除し、パネル表示を最新化。"""
+    changed = False
+    for g in bot.guilds:
+        if prune_waiting(g):
+            changed = True
+    if changed:
+        try:
+            await refresh_main_panel()
+            await update_all_game_panels()
+        except Exception as e:
+            print(f"prune_loop refresh error: {e}", flush=True)
+
 class GameButton(discord.ui.Button):
     def __init__(self, game):
         count = len(waiting_games.get(game, []))
@@ -242,6 +306,7 @@ class GameButton(discord.ui.Button):
         if user.voice is None or user.voice.channel is None:
             await interaction.response.send_message("❌ 先にボイスチャンネルに入室してください！", ephemeral=True)
             return
+        prune_waiting(interaction.guild)  # 幽霊エントリーを先に掃除
         target = waiting_games.setdefault(self.game, [])
         if user in target:
             target.remove(user)
@@ -418,6 +483,7 @@ class MatchingView(discord.ui.View):
 
     async def handle_standard_entry(self, interaction, target_list, target_count, mode_name, emoji, category):
         user = interaction.user
+        prune_waiting(interaction.guild)  # 幽霊エントリーを先に掃除
         if user in target_list:
             target_list.remove(user)
             self.update_labels()
@@ -461,6 +527,7 @@ class MatchingView(discord.ui.View):
     async def handle_work_entry(self, interaction, work_content):
         user = interaction.user
         global waiting_work
+        prune_waiting(interaction.guild)  # 幽霊エントリーを先に掃除
         if user.voice is None or user.voice.channel is None:
             await interaction.response.send_message("❌ 先にボイスチャンネルに入室してください！", ephemeral=True)
             return
@@ -556,6 +623,8 @@ async def on_ready():
             v = MatchingView(); v.update_labels()
             await panel_channel.send(embed=create_panel_embed(), view=v)
     await update_all_game_panels()
+    if not prune_loop.is_running():
+        prune_loop.start()
     print("====================================", flush=True)
 
 async def finalize_work_channel(channel, channel_name):
