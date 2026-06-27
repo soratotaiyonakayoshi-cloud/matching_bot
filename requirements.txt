@@ -1,5 +1,6 @@
 discord.py
 PyNaCl
+davey
 Flask
 aiohttp
 python-dotenv
