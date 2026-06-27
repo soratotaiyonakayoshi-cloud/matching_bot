@@ -4,6 +4,11 @@ from discord.ext import tasks
 import random
 import asyncio
 import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 import aiohttp
 from flask import Flask
 import threading
@@ -815,3 +820,5 @@ server_thread.start()
 
 if TOKEN:
     bot.run(TOKEN)
+else:
+    print("❌ 環境変数 DISCORD_BOT_TOKEN が設定されていません。.env を確認してください。", flush=True)

@@ -1,0 +1,17 @@
+[Unit]
+Description=Matching Discord Bot (マッチングBot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/matching_bot
+EnvironmentFile=/home/ubuntu/matching_bot/.env
+ExecStart=/home/ubuntu/matching_bot/venv/bin/python matching_bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

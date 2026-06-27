@@ -1,5 +1,5 @@
 discord.py
 PyNaCl
 Flask
-imageio-ffmpeg
-davey
+aiohttp
+python-dotenv
