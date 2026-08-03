@@ -36,6 +36,9 @@ PANEL_CHANNEL_ID = int(os.getenv("PANEL_CHANNEL_ID", "0"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 WEB_APP_URL = os.getenv("WEB_APP_URL", "https://minadeankinew.nibiroiro.workers.dev")
+# みんなで暗記！！(gakushu-rpg)連携：作業時間を通信簿・ランキングにも加算
+GAKUSHU_VC_URL = os.getenv("GAKUSHU_VC_URL", "https://gakushu-rpg.pages.dev/api/vc")
+GAKUSHU_VC_SECRET = os.getenv("GAKUSHU_VC_SECRET", "")
 JST = timezone(timedelta(hours=9))
 
 # ============================================================
@@ -78,6 +81,21 @@ async def supa_upsert(table, rows, on_conflict=None, merge=False):
                     print(f"Supabase upsert エラー {r.status}: {await r.text()}", flush=True)
     except Exception as e:
         print(f"Supabase upsert 失敗: {e}", flush=True)
+
+async def gakushu_report_work(rows):
+    """みんなで暗記！！(gakushu-rpg)の通信簿・ランキングへ作業時間を加算。
+    GAKUSHU_VC_SECRET 未設定なら連携オフ（何もしない）。送信失敗してもSupabase記録には影響しない。"""
+    if not GAKUSHU_VC_SECRET or not rows:
+        return
+    try:
+        async with aiohttp.ClientSession() as s:
+            for r in rows:
+                payload = {"secret": GAKUSHU_VC_SECRET, "uid": r["discord_id"], "seconds": r["duration_sec"]}
+                async with s.post(GAKUSHU_VC_URL, json=payload) as resp:
+                    if resp.status >= 300:
+                        print(f"gakushu-rpg 作業時間加算エラー {resp.status}: {await resp.text()}", flush=True)
+    except Exception as e:
+        print(f"gakushu-rpg 作業時間加算失敗: {e}", flush=True)
 
 # ============================================================
 #  設定（Supabase bot_config に jsonb で保持）
@@ -719,6 +737,7 @@ async def finalize_work_channel(channel, channel_name):
 
     if rows:
         await supa_upsert("work_sessions", rows)
+        await gakushu_report_work(rows)
 
     log_channel = bot.get_channel(WORK_LOG_CHANNEL_ID)
     if log_channel:
@@ -726,6 +745,8 @@ async def finalize_work_channel(channel, channel_name):
             desc = (f"**{channel_name}** が解散しました！\n\n**🎯 各自の作業時間：**\n"
                     + "\n".join(detail_lines)
                     + f"\n\nお互いお疲れさま！👏\n📊 通信簿で成績を確認 → {WEB_APP_URL}")
+            if GAKUSHU_VC_SECRET:
+                desc += "\n🎮 みんなで暗記！！のランキングにも反映されました"
         else:
             desc = f"**{channel_name}** が解散しました（記録対象の作業時間はありませんでした）。"
         embed = discord.Embed(title="📝 作業レポート", description=desc, color=discord.Color.green())
