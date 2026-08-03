@@ -230,14 +230,61 @@ def _work_entry(ch_id, member):
     d = work_times.setdefault(ch_id, {})
     e = d.get(member.id)
     if e is None:
-        e = {"join": None, "accrued": 0.0, "name": member.display_name}
+        e = {"join": None, "first_join": None, "accrued": 0.0, "name": member.display_name}
         d[member.id] = e
+    else:
+        e["name"] = member.display_name
     return e
 
-def register_work_channel(ch_id, matched):
+def work_join(ch_id, member, when=None):
+    """入室した瞬間を記録。既に計測中なら触らない（多重スタンプで時間が消えるのを防ぐ）。"""
+    e = _work_entry(ch_id, member)
+    if e["join"] is None:
+        e["join"] = when or datetime.now(JST)
+    if e["first_join"] is None:
+        e["first_join"] = e["join"]
+
+def work_leave(ch_id, member, when=None):
+    """退室した瞬間までを accrued に加算。計測中でなければ何もしない。"""
+    e = _work_entry(ch_id, member)
+    if e["join"] is not None:
+        e["accrued"] += ((when or datetime.now(JST)) - e["join"]).total_seconds()
+        e["join"] = None
+
+def register_work_channel(ch_id, matched=None, members=None):
+    """作業VCを計測対象に登録。再起動後の拾い直しでも呼べるよう冪等にしている。"""
     work_channel_ids.add(ch_id)
-    work_content[ch_id] = {w["user"].id: w["content"] for w in matched}
-    work_room_start[ch_id] = datetime.now(JST)
+    if matched is not None:
+        work_content[ch_id] = {w["user"].id: w["content"] for w in matched}
+    else:
+        work_content.setdefault(ch_id, {})
+    work_room_start.setdefault(ch_id, datetime.now(JST))
+    for m in members or []:
+        if not m.bot:
+            work_join(ch_id, m)
+
+def _is_temp_vc_name(name):
+    """Botが作る臨時VC（雑談/恋バナ/作業/ゲーム）かどうかの判定。解散処理と拾い直しで共有。"""
+    return "臨時" in name or "部屋" in name or "🎮" in name
+
+WORK_VC_MARK = "臨時作業VC"
+
+async def adopt_existing_temp_channels():
+    """再起動しても、既に立っている臨時VCを見失わないよう拾い直す。
+    ・作業VCは計測を再開（再起動前の分は復元できないので、この時点から加算）。
+    ・「稼働中の部屋に合流」「解散時の自動削除」の対象にも戻す。"""
+    adopted = 0
+    for g in bot.guilds:
+        for ch in g.voice_channels:
+            if not _is_temp_vc_name(ch.name):
+                continue
+            if ch.id not in created_temp_channels:
+                created_temp_channels.append(ch.id)
+            if WORK_VC_MARK in ch.name:
+                register_work_channel(ch.id, members=[m for m in ch.members if not m.bot])
+                adopted += 1
+    if adopted:
+        print(f"★再起動後の作業VC {adopted}件の計測を再開しました", flush=True)
 
 # ============================================================
 #  ゲーム用 UI
@@ -628,6 +675,7 @@ async def on_ready():
             v = MatchingView(); v.update_labels()
             await panel_channel.send(embed=create_panel_embed(), view=v)
     await update_all_game_panels()
+    await adopt_existing_temp_channels()
     if not prune_loop.is_running():
         prune_loop.start()
     print("====================================", flush=True)
@@ -653,12 +701,13 @@ async def finalize_work_channel(channel, channel_name):
         if sec < 60:
             continue  # 1分未満は記録しない
         c = contents.get(uid, "作業")
+        began = e.get("first_join") or start  # 途中参加者は本人の入室時刻を開始時刻にする
         rows.append({
             "discord_id": str(uid),
             "display_name": e["name"],
             "content": c,
             "duration_sec": sec,
-            "started_at": start.isoformat(),
+            "started_at": began.isoformat(),
             "ended_at": now.isoformat(),
             "channel_name": channel_name,
             "guild_id": str(channel.guild.id),
@@ -689,21 +738,21 @@ async def on_voice_state_update(member, before, after):
         pass
 
     # --- 作業VCの入退室を秒単位でトラッキング ---
+    # ⚠️ このイベントはミュート/スピーカーミュート/画面共有/カメラの切替でも発火する。
+    #    その場合 before.channel == after.channel なので、必ず「移動したか」で判定すること。
+    #    （切替のたびに join を打ち直すと、それまでの経過時間が丸ごと失われる）
     if not member.bot:
-        if after.channel and after.channel.id in work_channel_ids:
-            _work_entry(after.channel.id, member)["join"] = datetime.now(JST)
-        if before.channel and before.channel.id in work_channel_ids and (
-            after.channel is None or after.channel.id != before.channel.id
-        ):
-            e = _work_entry(before.channel.id, member)
-            if e["join"] is not None:
-                e["accrued"] += (datetime.now(JST) - e["join"]).total_seconds()
-                e["join"] = None
+        before_id = before.channel.id if before.channel else None
+        after_id = after.channel.id if after.channel else None
+        if before_id != after_id:
+            now = datetime.now(JST)
+            if before_id in work_channel_ids:
+                work_leave(before_id, member, now)
+            if after_id in work_channel_ids:
+                work_join(after_id, member, now)
 
     # --- 臨時VCの解散処理 ---
-    if before.channel is not None and (
-        "臨時" in before.channel.name or "部屋" in before.channel.name or "🎮" in before.channel.name
-    ):
+    if before.channel is not None and _is_temp_vc_name(before.channel.name):
         humans = [m for m in before.channel.members if not m.bot]
         if len(humans) == 0:
             ch = before.channel
@@ -724,6 +773,19 @@ async def on_voice_state_update(member, before, after):
                     created_temp_channels.remove(ch_id)
             except Exception as e:
                 print(f"チャンネル削除エラー: {e}", flush=True)
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    """管理者が手動で作業VCを消した場合でも記録を取りこぼさない（自動解散時は集計済みなので素通り）。"""
+    try:
+        if channel.id in work_channel_ids:
+            await finalize_work_channel(channel, channel.name)
+    except Exception as e:
+        print(f"チャンネル削除時の作業集計エラー: {e}", flush=True)
+    if channel.id in active_pomodoros:
+        active_pomodoros.pop(channel.id).cancel()
+    if channel.id in created_temp_channels:
+        created_temp_channels.remove(channel.id)
 
 # ============================================================
 #  スラッシュコマンド
